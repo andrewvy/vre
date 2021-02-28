@@ -1,19 +1,25 @@
 use std::{error::Error, ffi::CString, ptr};
 use std::{ffi::CStr, os::raw::c_void};
 
+use ash::extensions::ext::DebugUtils;
 use ash::{
     extensions,
-    version::{EntryV1_0, InstanceV1_0},
+    version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
     vk, Device, Entry, Instance,
 };
-use ash::{extensions::ext::DebugUtils, version::DeviceV1_0};
 
 use winit::window::Window;
+
+use self::swapchain::SwapchainBundle;
+
+mod device;
+mod swapchain;
 
 pub const APPLICATION_VERSION: u32 = vk::make_version(1, 0, 0);
 pub const ENGINE_VERSION: u32 = vk::make_version(1, 0, 0);
 pub const API_VERSION: u32 = vk::make_version(1, 0, 92);
 pub const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+pub const REQUIRED_DEVICE_EXTENSIONS: [&'static str; 1] = ["VK_KHR_swapchain"];
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -77,6 +83,9 @@ pub struct VulkanBackend {
     graphics_queue: vk::Queue,
     #[allow(dead_code)]
     present_queue: vk::Queue,
+
+    #[allow(dead_code)]
+    swapchain_bundle: SwapchainBundle,
 }
 
 impl VulkanBackend {
@@ -90,13 +99,20 @@ impl VulkanBackend {
             .expect("Could not create SurfaceBundle.");
         let physical_device = VulkanBackend::get_physical_device(&instance, &surface_bundle);
         let (logical_device, indices) =
-            VulkanBackend::create_logical_device(&instance, physical_device, &surface_bundle);
+            device::create_logical_device(&instance, physical_device, &surface_bundle);
 
         let graphics_queue =
             unsafe { logical_device.get_device_queue(indices.graphics_family.unwrap(), 0) };
-
         let present_queue =
             unsafe { logical_device.get_device_queue(indices.present_family.unwrap(), 0) };
+
+        let swapchain_bundle = SwapchainBundle::new(
+            &instance,
+            &logical_device,
+            physical_device,
+            &surface_bundle,
+            indices,
+        );
 
         VulkanBackend {
             _entry: entry,
@@ -108,6 +124,7 @@ impl VulkanBackend {
             logical_device,
             graphics_queue,
             present_queue,
+            swapchain_bundle,
         }
     }
 
@@ -133,59 +150,22 @@ impl VulkanBackend {
         surface_bundle: &SurfaceBundle,
     ) -> bool {
         let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
-        let _device_features = unsafe { instance.get_physical_device_features(physical_device) };
-        let _device_queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let is_required_extensions_supported =
+            device::check_device_extension_support(instance, physical_device);
+        let is_swapchain_supported = if is_required_extensions_supported {
+            let swapchain_details =
+                swapchain::SwapchainSupportDetails::new(physical_device, surface_bundle);
+            !swapchain_details.formats.is_empty() && !swapchain_details.present_modes.is_empty()
+        } else {
+            false
+        };
+        let is_queue_family_supported =
+            device::find_queue_family(instance, physical_device, surface_bundle).is_complete();
 
         device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
-            && VulkanBackend::find_queue_family(instance, physical_device, surface_bundle)
-                .is_complete()
-    }
-
-    fn find_queue_family(
-        instance: &Instance,
-        physical_device: vk::PhysicalDevice,
-        surface_bundle: &SurfaceBundle,
-    ) -> QueueFamilyIndices {
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-
-        let mut indices = QueueFamilyIndices {
-            graphics_family: None,
-            present_family: None,
-        };
-
-        let mut index = 0;
-        for queue_family in queue_families.iter() {
-            if queue_family.queue_count > 0
-                && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-            {
-                indices.graphics_family = Some(index);
-            }
-
-            let has_present_support = unsafe {
-                surface_bundle
-                    .surface_loader
-                    .get_physical_device_surface_support(
-                        physical_device,
-                        index,
-                        surface_bundle.surface,
-                    )
-                    .expect("Could not check physical device for surface support.")
-            };
-
-            if queue_family.queue_count > 0 && has_present_support {
-                indices.present_family = Some(index);
-            }
-
-            if indices.is_complete() {
-                break;
-            }
-
-            index += 1;
-        }
-
-        indices
+            && is_queue_family_supported
+            && is_required_extensions_supported
+            && is_swapchain_supported
     }
 
     fn create_entry() -> Entry {
@@ -269,30 +249,6 @@ impl VulkanBackend {
             surface,
             surface_loader,
         })
-    }
-
-    fn create_logical_device(
-        instance: &Instance,
-        physical_device: vk::PhysicalDevice,
-        surface_bundle: &SurfaceBundle,
-    ) -> (Device, QueueFamilyIndices) {
-        let indices = VulkanBackend::find_queue_family(instance, physical_device, surface_bundle);
-        let priorities = [1.0];
-        let queue_info = vk::DeviceQueueCreateInfo::builder()
-            .queue_family_index(indices.graphics_family.unwrap())
-            .queue_priorities(&priorities)
-            .build();
-        let device_create_info = vk::DeviceCreateInfo::builder()
-            .queue_create_infos(&[queue_info])
-            .build();
-
-        let device = unsafe {
-            instance
-                .create_device(physical_device, &device_create_info, None)
-                .expect("Could not create Vulkan Device.")
-        };
-
-        (device, indices)
     }
 
     fn check_validation_layer_support(entry: &Entry) -> bool {
