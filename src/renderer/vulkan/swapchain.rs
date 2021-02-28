@@ -1,4 +1,4 @@
-use ash::{vk, Device, Instance};
+use ash::{version::DeviceV1_0, vk, Device, Instance};
 
 use super::{QueueFamilyIndices, SurfaceBundle};
 
@@ -86,6 +86,7 @@ pub struct SwapchainBundle {
     pub swapchain_format: vk::Format,
     pub swapchain_extent: vk::Extent2D,
     pub swapchain_images: Vec<vk::Image>,
+    pub swapchain_image_views: Vec<vk::ImageView>,
 }
 
 impl SwapchainBundle {
@@ -148,12 +149,54 @@ impl SwapchainBundle {
                 .expect("Failed to get swapchain images.")
         };
 
+        let swapchain_image_views =
+            SwapchainBundle::create_image_views(&swapchain_images, surface_format.format, device);
+
         Self {
             swapchain_loader,
             swapchain,
             swapchain_format: surface_format.format,
             swapchain_extent: extent,
             swapchain_images,
+            swapchain_image_views,
         }
+    }
+
+    fn create_image_views(
+        swapchain_images: &Vec<vk::Image>,
+        swapchain_format: vk::Format,
+        device: &Device,
+    ) -> Vec<vk::ImageView> {
+        swapchain_images
+            .iter()
+            .map(|image| {
+                let image_view_create_info = vk::ImageViewCreateInfo::builder()
+                    .image(*image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(swapchain_format)
+                    .components(
+                        vk::ComponentMapping::builder()
+                            .r(vk::ComponentSwizzle::IDENTITY)
+                            .g(vk::ComponentSwizzle::IDENTITY)
+                            .b(vk::ComponentSwizzle::IDENTITY)
+                            .a(vk::ComponentSwizzle::IDENTITY)
+                            .build(),
+                    )
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .build();
+
+                unsafe {
+                    device
+                        .create_image_view(&image_view_create_info, None)
+                        .expect("Could not create image view.")
+                }
+            })
+            .collect()
     }
 }
