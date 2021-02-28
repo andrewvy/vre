@@ -1,5 +1,5 @@
 [package]
-name = "vulkan-tutorial"
+name = "vre"
 version = "0.1.0"
 authors = ["Andrew Vy <andrew@andrewvy.com>"]
 edition = "2018"
