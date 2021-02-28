@@ -1,12 +1,12 @@
 use std::{error::Error, ffi::CString, ptr};
 use std::{ffi::CStr, os::raw::c_void};
 
-use ash::extensions::ext::DebugUtils;
 use ash::{
     extensions,
     version::{EntryV1_0, InstanceV1_0},
-    vk, Entry, Instance,
+    vk, Device, Entry, Instance,
 };
+use ash::{extensions::ext::DebugUtils, version::DeviceV1_0};
 
 use winit::window::Window;
 
@@ -70,6 +70,10 @@ pub struct VulkanBackend {
     debug_messenger: vk::DebugUtilsMessengerEXT,
     #[allow(dead_code)]
     physical_device: vk::PhysicalDevice,
+    #[allow(dead_code)]
+    logical_device: Device,
+    #[allow(dead_code)]
+    graphics_queue: vk::Queue,
 }
 
 impl VulkanBackend {
@@ -82,6 +86,8 @@ impl VulkanBackend {
         let physical_device = VulkanBackend::get_physical_device(&instance);
         let surface_bundle = VulkanBackend::create_surface_bundle(&entry, &instance, &window)
             .expect("Could not create SurfaceBundle.");
+        let (logical_device, graphics_queue) =
+            VulkanBackend::create_logical_device(&instance, physical_device);
 
         VulkanBackend {
             _entry: entry,
@@ -90,6 +96,8 @@ impl VulkanBackend {
             debug_utils_loader,
             debug_messenger,
             physical_device,
+            logical_device,
+            graphics_queue,
         }
     }
 
@@ -226,6 +234,32 @@ impl VulkanBackend {
             surface,
             surface_loader,
         })
+    }
+
+    fn create_logical_device(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> (Device, vk::Queue) {
+        let indices = VulkanBackend::find_queue_family(instance, physical_device);
+        let priorities = [1.0];
+        let queue_info = vk::DeviceQueueCreateInfo::builder()
+            .queue_family_index(indices.graphics_family.unwrap())
+            .queue_priorities(&priorities)
+            .build();
+        let device_create_info = vk::DeviceCreateInfo::builder()
+            .queue_create_infos(&[queue_info])
+            .build();
+
+        let device = unsafe {
+            instance
+                .create_device(physical_device, &device_create_info, None)
+                .expect("Could not create Vulkan Device.")
+        };
+
+        let graphics_queue =
+            unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+
+        (device, graphics_queue)
     }
 
     fn check_validation_layer_support(entry: &Entry) -> bool {
