@@ -42,11 +42,12 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 
 pub struct QueueFamilyIndices {
     graphics_family: Option<u32>,
+    present_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
     pub fn is_complete(&self) -> bool {
-        self.graphics_family.is_some()
+        self.graphics_family.is_some() && self.present_family.is_some()
     }
 }
 
@@ -74,6 +75,8 @@ pub struct VulkanBackend {
     logical_device: Device,
     #[allow(dead_code)]
     graphics_queue: vk::Queue,
+    #[allow(dead_code)]
+    present_queue: vk::Queue,
 }
 
 impl VulkanBackend {
@@ -83,11 +86,17 @@ impl VulkanBackend {
             VulkanBackend::create_instance(&entry, window).expect("Could not create VK Instance.");
         let (debug_utils_loader, debug_messenger) =
             VulkanBackend::setup_debug_utils(&entry, &instance);
-        let physical_device = VulkanBackend::get_physical_device(&instance);
         let surface_bundle = VulkanBackend::create_surface_bundle(&entry, &instance, &window)
             .expect("Could not create SurfaceBundle.");
-        let (logical_device, graphics_queue) =
-            VulkanBackend::create_logical_device(&instance, physical_device);
+        let physical_device = VulkanBackend::get_physical_device(&instance, &surface_bundle);
+        let (logical_device, indices) =
+            VulkanBackend::create_logical_device(&instance, physical_device, &surface_bundle);
+
+        let graphics_queue =
+            unsafe { logical_device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+
+        let present_queue =
+            unsafe { logical_device.get_device_queue(indices.present_family.unwrap(), 0) };
 
         VulkanBackend {
             _entry: entry,
@@ -98,14 +107,18 @@ impl VulkanBackend {
             physical_device,
             logical_device,
             graphics_queue,
+            present_queue,
         }
     }
 
-    pub fn get_physical_device(instance: &Instance) -> vk::PhysicalDevice {
+    pub fn get_physical_device(
+        instance: &Instance,
+        surface_bundle: &SurfaceBundle,
+    ) -> vk::PhysicalDevice {
         VulkanBackend::devices(instance)
             .expect("Could not fetch devices.")
             .into_iter()
-            .find(|device| VulkanBackend::is_device_suitable(instance, *device))
+            .find(|device| VulkanBackend::is_device_suitable(instance, *device, surface_bundle))
             .expect("Could not find a suitable PhysicalDevice!")
     }
 
@@ -114,25 +127,32 @@ impl VulkanBackend {
         Ok(devices)
     }
 
-    fn is_device_suitable(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    fn is_device_suitable(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+        surface_bundle: &SurfaceBundle,
+    ) -> bool {
         let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
         let _device_features = unsafe { instance.get_physical_device_features(physical_device) };
         let _device_queue_families =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
 
         device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
-            && VulkanBackend::find_queue_family(instance, physical_device).is_complete()
+            && VulkanBackend::find_queue_family(instance, physical_device, surface_bundle)
+                .is_complete()
     }
 
     fn find_queue_family(
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
+        surface_bundle: &SurfaceBundle,
     ) -> QueueFamilyIndices {
         let queue_families =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
 
         let mut indices = QueueFamilyIndices {
             graphics_family: None,
+            present_family: None,
         };
 
         let mut index = 0;
@@ -141,6 +161,21 @@ impl VulkanBackend {
                 && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
             {
                 indices.graphics_family = Some(index);
+            }
+
+            let has_present_support = unsafe {
+                surface_bundle
+                    .surface_loader
+                    .get_physical_device_surface_support(
+                        physical_device,
+                        index,
+                        surface_bundle.surface,
+                    )
+                    .expect("Could not check physical device for surface support.")
+            };
+
+            if queue_family.queue_count > 0 && has_present_support {
+                indices.present_family = Some(index);
             }
 
             if indices.is_complete() {
@@ -239,8 +274,9 @@ impl VulkanBackend {
     fn create_logical_device(
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
-    ) -> (Device, vk::Queue) {
-        let indices = VulkanBackend::find_queue_family(instance, physical_device);
+        surface_bundle: &SurfaceBundle,
+    ) -> (Device, QueueFamilyIndices) {
+        let indices = VulkanBackend::find_queue_family(instance, physical_device, surface_bundle);
         let priorities = [1.0];
         let queue_info = vk::DeviceQueueCreateInfo::builder()
             .queue_family_index(indices.graphics_family.unwrap())
@@ -256,10 +292,7 @@ impl VulkanBackend {
                 .expect("Could not create Vulkan Device.")
         };
 
-        let graphics_queue =
-            unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
-
-        (device, graphics_queue)
+        (device, indices)
     }
 
     fn check_validation_layer_support(entry: &Entry) -> bool {
