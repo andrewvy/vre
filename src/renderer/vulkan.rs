@@ -2,7 +2,11 @@ use std::{error::Error, ffi::CString, ptr};
 use std::{ffi::CStr, os::raw::c_void};
 
 use ash::extensions::ext::DebugUtils;
-use ash::{extensions, version::EntryV1_0, vk, Entry, Instance};
+use ash::{
+    extensions,
+    version::{EntryV1_0, InstanceV1_0},
+    vk, Entry, Instance,
+};
 
 use winit::window::Window;
 
@@ -36,6 +40,16 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
     vk::FALSE
 }
 
+pub struct QueueFamilyIndices {
+    graphics_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    pub fn is_complete(&self) -> bool {
+        self.graphics_family.is_some()
+    }
+}
+
 pub struct SurfaceBundle {
     #[allow(dead_code)]
     surface_loader: extensions::khr::Surface,
@@ -54,6 +68,8 @@ pub struct VulkanBackend {
     debug_utils_loader: ash::extensions::ext::DebugUtils,
     #[allow(dead_code)]
     debug_messenger: vk::DebugUtilsMessengerEXT,
+    #[allow(dead_code)]
+    physical_device: vk::PhysicalDevice,
 }
 
 impl VulkanBackend {
@@ -63,6 +79,7 @@ impl VulkanBackend {
             VulkanBackend::create_instance(&entry, window).expect("Could not create VK Instance.");
         let (debug_utils_loader, debug_messenger) =
             VulkanBackend::setup_debug_utils(&entry, &instance);
+        let physical_device = VulkanBackend::get_physical_device(&instance);
         let surface_bundle = VulkanBackend::create_surface_bundle(&entry, &instance, &window)
             .expect("Could not create SurfaceBundle.");
 
@@ -72,7 +89,60 @@ impl VulkanBackend {
             surface_bundle,
             debug_utils_loader,
             debug_messenger,
+            physical_device,
         }
+    }
+
+    pub fn get_physical_device(instance: &Instance) -> vk::PhysicalDevice {
+        VulkanBackend::devices(instance)
+            .expect("Could not fetch devices.")
+            .into_iter()
+            .find(|device| VulkanBackend::is_device_suitable(instance, *device))
+            .expect("Could not find a suitable PhysicalDevice!")
+    }
+
+    pub fn devices(instance: &Instance) -> Result<Vec<vk::PhysicalDevice>, Box<dyn Error>> {
+        let devices = unsafe { instance.enumerate_physical_devices()? };
+        Ok(devices)
+    }
+
+    fn is_device_suitable(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+        let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let _device_features = unsafe { instance.get_physical_device_features(physical_device) };
+        let _device_queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+
+        device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+            && VulkanBackend::find_queue_family(instance, physical_device).is_complete()
+    }
+
+    fn find_queue_family(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> QueueFamilyIndices {
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+
+        let mut indices = QueueFamilyIndices {
+            graphics_family: None,
+        };
+
+        let mut index = 0;
+        for queue_family in queue_families.iter() {
+            if queue_family.queue_count > 0
+                && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+            {
+                indices.graphics_family = Some(index);
+            }
+
+            if indices.is_complete() {
+                break;
+            }
+
+            index += 1;
+        }
+
+        indices
     }
 
     fn create_entry() -> Entry {
@@ -98,7 +168,7 @@ impl VulkanBackend {
             api_version: API_VERSION,
         };
 
-        let debug_utils_messenger_info = populate_debug_messenger_create_info();
+        let debug_utils_messenger_info = create_debug_utils_messenger_info();
 
         let mut surface_extensions = ash_window::enumerate_required_extensions(window)?;
 
@@ -198,7 +268,7 @@ impl VulkanBackend {
         if has_validation_layer_support {
             (debug_utils_loader, ash::vk::DebugUtilsMessengerEXT::null())
         } else {
-            let messenger_ci = populate_debug_messenger_create_info();
+            let messenger_ci = create_debug_utils_messenger_info();
 
             let utils_messenger = unsafe {
                 debug_utils_loader
@@ -211,7 +281,7 @@ impl VulkanBackend {
     }
 }
 
-fn populate_debug_messenger_create_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
+fn create_debug_utils_messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
     vk::DebugUtilsMessengerCreateInfoEXT {
         s_type: vk::StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         p_next: ptr::null(),
